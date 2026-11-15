@@ -10,22 +10,6 @@
 
 ---
 
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Objectives](#objectives)
-3. [Data](#data)
-4. [Methodology](#methodology)
-5. [Results](#results)
-6. [Five-Year Forecasts (2025–2029)](#five-year-forecasts-20252029)
-7. [Key Findings](#key-findings)
-8. [Limitations](#limitations)
-9. [Tools and Packages](#tools-and-packages)
-10. [Repository Structure](#repository-structure)
-11. [References](#references)
-
----
-
 ## Overview
 
 The Philippines lies along the Pacific Ring of Fire and within the typhoon belt, making it one of the most disaster-prone countries in the world. One key indicator of disaster impact is **total affected humans**: people who are directly impacted, injured, displaced, or evacuated.
