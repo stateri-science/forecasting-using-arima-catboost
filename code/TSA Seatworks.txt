@@ -1,0 +1,653 @@
+﻿#============================================================
+# TOTAL AFFECTED POPULATION FORECASTING (1963-2024)
+# Hybrid ARIMA-CatBoost
+# Justine C. Badua and Erica Jean F. Fortu
+#============================================================
+set.seed(1234)
+# ============================================================
+# ARIMA & DIAGNOSTICS
+# ============================================================
+library(forecast)
+library(tseries)
+library(ggplot2)
+library(seastests)
+
+
+# 1. DATA PREPARATION
+
+
+affecteddata <- read.csv("C:/Users/Lenovo/Downloads/TSA ARIMA Catboost Data.csv")
+affecteddata <- affecteddata[order(affecteddata$Year), ]
+
+
+affected_raw <- as.numeric(gsub("[^0-9.]", "", affecteddata$affected))
+affected_log <- log1p(affected_raw)
+
+
+start_year <- min(affecteddata$Year)
+ts_raw <- ts(affected_raw, start = start_year, frequency = 1)
+ts_affected <- ts(affected_log, start = start_year, frequency = 1)
+
+
+# 2. TIME SERIES PLOT
+autoplot(ts_raw) +
+  ggtitle("Annual Total Affected Population") +
+  ylab("affected") + xlab("Year")
+
+
+autoplot(ts_affected) +
+  ggtitle("Log-Transformed Total Affected (Annual)") +
+  ylab("log(1 + affected)") + xlab("Year")
+
+
+# 3. TRAIN–TEST SPLIT
+n_total <- length(ts_affected)
+train_ratio <- 0.80
+train_size  <- floor(train_ratio * n_total)
+
+
+train_ts <- window(ts_affected, end = time(ts_affected)[train_size])
+test_ts  <- window(ts_affected, start = time(ts_affected)[train_size + 1])
+
+
+train_end_year <- end(train_ts)[1]
+summary_msg <- sprintf(
+  "Data Split Summary:\n  Train: %d obs (%d - %d)\n  Test:  %d obs (%d - %d)",
+  length(train_ts), start(train_ts)[1], end(train_ts)[1],
+  length(test_ts),  start(test_ts)[1],  end(test_ts)[1]
+)
+cat(summary_msg, "\n")
+
+
+# 4. STATIONARITY TESTS
+adf.test(train_ts)
+kpss.test(train_ts)
+
+
+d <- ndiffs(train_ts)
+cat("Recommended differencing order:", d, "\n")
+
+
+train_diff <- diff(train_ts, differences = d)
+
+
+# 5. ACF & PACF
+par(mfrow = c(1, 2)) 
+Acf(train_diff, lag.max = 10, main = "ACF of First Differenced")
+Pacf(train_diff, lag.max = 10, main = "PACF of First Differenced")
+par(mfrow = c(1, 1))
+
+
+# 6.ARIMA MODEL SELECTION AND ESTIMATION
+library(forecast)
+library(tseries)
+
+
+# Model 1: ARIMA(1,1,6)
+model_1 <- Arima(
+  train_ts,
+  order = c(1, 1, 6),
+  include.mean = TRUE,
+  method = "ML"
+)
+AIC(model_1)
+checkresiduals(model_1)
+
+
+# Model 2: ARIMA(1,1,7)
+model_2 <- Arima(
+  train_ts,
+  order = c(1, 1, 7),
+  include.mean = TRUE,
+  method = "ML"
+)
+AIC(model_2)
+checkresiduals(model_2)
+
+
+# Model 3: ARIMA(5,1,1)
+model_3 <- Arima(
+  train_ts,
+  order = c(5, 1, 1),
+  include.mean = TRUE,
+  method = "ML"
+)
+AIC(model_3)
+checkresiduals(model_3)
+
+
+# Model 4: ARIMA(1,1,2)
+model_4 <- Arima(
+  train_ts,
+  order = c(1, 1, 2),
+  include.mean = TRUE,
+  method = "ML"
+)
+AIC(model_4)
+checkresiduals(model_4)
+
+
+# Model 5: ARIMA(1,1,8)
+model_5 <- Arima(
+  train_ts,
+  order = c(1, 1, 8),
+  include.mean = TRUE,
+  method = "ML"
+)
+AIC(model_5)
+checkresiduals(model_5)
+
+
+# 7. ARIMA MODEL FITTING AND DIAGNOSTICS
+arima_fit <- model_3
+print(summary(arima_fit))
+checkresiduals(arima_fit)
+
+
+# 8. STATIONARITY & INVERTIBILITY
+autoplot(model_3) + 
+  ggtitle("Inverse AR/MA Roots: Stationarity and Invertibility Check") +
+  theme_minimal()
+
+
+# 9. Actual vs. Fitted + Test Forecast
+h_test <- length(test_ts)
+test_forecast <- forecast(arima_fit, h = h_test)
+arima_pred_test <- as.numeric(test_forecast$mean)
+autoplot(ts_affected, series = "Actual Data (Full)") +
+  autolayer(fitted(arima_fit), series = "ARIMA Fitted (Train)", linewidth = 1) +
+  autolayer(test_forecast$mean, series = "ARIMA Forecast (Test)", linewidth = 1, linetype = "dashed") +
+  ggtitle("Actual vs ARIMA: Training Fit & Test Forecast") +
+  ylab("log(1 + affected)") +
+  xlab("Year") +
+  scale_color_manual(values = c(
+    "Actual Data (Full)" = "black", 
+    "ARIMA Fitted (Train)" = "red", 
+    "ARIMA Forecast (Test)" = "blue"
+  )) +
+  theme_minimal()
+
+
+# 10. FINAL FUTURE FORECAST (2025-2029)
+final_fit <- Arima(ts_affected, order = c(5, 1, 1), include.mean = TRUE)
+future_5yr <- forecast(final_fit, h = 5)
+
+
+autoplot(future_5yr) +
+  ggtitle("Total Affected: 5-Year Future Projection (2025-2029)") +
+  ylab("log(1 + affected)") + xlab("Year") +
+  theme_minimal()
+
+
+# ============================================================
+# CATBOOST STANDALONE 
+# ============================================================
+library(catboost)
+
+
+# 11. FEATURE ENGINEERING
+create_catboost_direct_features <- function(series, lags = 5) {
+  n <- length(series)
+  X <- matrix(NA, nrow = n - lags, ncol = lags + 1)
+  y <- numeric(n - lags)
+  
+  for (i in (lags + 1):n) {
+    idx <- i - lags
+    X[idx, 1] <- i
+    X[idx, 2:(lags + 1)] <- series[(i - 1):(i - lags)]
+    y[idx] <- series[i]
+  }
+  
+  colnames(X) <- c("time_idx", paste0("lag", 1:lags))
+  list(X = X, y = y)
+}
+
+
+lags_cb <- 5
+
+
+cb_direct_data <- create_catboost_direct_features(
+  as.numeric(ts_affected),
+  lags = lags_cb
+)
+
+
+# Align with ARIMA split 
+train_len_cb <- length(train_ts) - lags_cb
+
+
+X_cb_train <- cb_direct_data$X[1:train_len_cb, ]
+y_cb_train <- cb_direct_data$y[1:train_len_cb]
+
+
+X_cb_test <- cb_direct_data$X[(train_len_cb + 1):nrow(cb_direct_data$X), ]
+y_cb_test <- cb_direct_data$y[(train_len_cb + 1):length(cb_direct_data$y)]
+
+
+# 12. CATBOOST MODEL TRAINING
+cb_direct_pool <- catboost.load_pool(
+  data  = X_cb_train,
+  label = y_cb_train
+)
+
+
+cb_direct_params <- list(
+  iterations = 150,
+  learning_rate = 0.05,
+  depth = 4,
+  loss_function = "RMSE",
+  random_seed = 1234,
+  verbose = 50
+)
+
+
+catboost_direct_model <- catboost.train(
+  learn_pool = cb_direct_pool,
+  test_pool  = NULL,
+  params     = cb_direct_params
+)
+
+
+cb_direct_test_pool <- catboost.load_pool(X_cb_test)
+
+
+catboost_pred_test <- as.numeric(
+  catboost.predict(catboost_direct_model, cb_direct_test_pool)
+)
+
+
+# ============================================================
+# HYBRID ARIMA CATBOOST
+# ============================================================
+
+
+# 13. EXTRACT ARIMA RESIDUALS (TRAIN)
+arima_fitted_train <- fitted(arima_fit)
+arima_residuals_train <- as.numeric(train_ts - arima_fitted_train)
+
+
+# 14. FEATURE ENGINEERING ON RESIDUALS
+create_residual_features <- function(residuals, lags = 5) {
+  n <- length(residuals)
+  X <- matrix(NA, nrow = n - lags, ncol = lags + 2)
+  y <- numeric(n - lags)
+  
+  for (i in (lags + 1):n) {
+    idx <- i - lags
+    X[idx, 1] <- i
+    X[idx, 2:(lags + 1)] <- residuals[(i - 1):(i - lags)]
+    X[idx, lags + 2] <- mean(residuals[(i - lags):(i - 1)])
+    y[idx] <- residuals[i]
+  }
+  
+  colnames(X) <- c("time_idx", paste0("lag", 1:lags), "rolling_mean")
+  list(X = X, y = y)
+}
+
+
+resid_data <- create_residual_features(arima_residuals_train, lags = 5)
+
+
+X_resid_train <- resid_data$X
+y_resid_train <- resid_data$y
+
+
+# 15. TRAINING CATBOOST ON RESIDUALS
+resid_train_pool <- catboost.load_pool(
+  data  = X_resid_train,
+  label = y_resid_train
+)
+
+
+cb_resid_params <- list(
+  iterations = 150,
+  learning_rate = 0.05,
+  depth = 3,
+  loss_function = "RMSE",
+  random_seed = 1234,
+  verbose = 50
+)
+
+
+catboost_resid_model <- catboost.train(
+  learn_pool = resid_train_pool,
+  test_pool  = NULL,
+  params     = cb_resid_params
+)
+
+
+# 16. HYBRID FORECASTING (RECURSIVE)
+recent_residuals <- tail(arima_residuals_train, 5)
+hybrid_pred_test <- numeric(length(test_ts))
+
+
+DAMPING_FACTOR <- 0.3
+
+
+for (i in 1:length(test_ts)) {
+  features <- matrix(c(
+    length(train_ts) + i,
+    rev(recent_residuals),
+    mean(recent_residuals)
+  ), nrow = 1)
+  
+  colnames(features) <- colnames(X_resid_train)
+  
+  pool <- catboost.load_pool(features)
+  resid_pred <- catboost.predict(catboost_resid_model, pool)
+  
+  resid_pred <- resid_pred * DAMPING_FACTOR
+  hybrid_pred_test[i] <- arima_pred_test[i] + resid_pred
+  
+  # update residual memory using actual
+  actual_resid <- as.numeric(test_ts[i] - arima_pred_test[i])
+  recent_residuals <- c(recent_residuals[-1], actual_resid)
+}
+
+
+# SANITY CHECK
+cat("\nSanity check (values must be NON-zero):\n")
+cat("max |CatBoost − Hybrid| = ",
+    max(abs(catboost_pred_test - hybrid_pred_test)), "\n")
+
+
+# ============================================================
+# 17. VISUALIZATION: TEST SET PERFORMANCE
+# ============================================================
+library(ggplot2)
+
+
+test_years_vec <- as.numeric(time(test_ts))
+actual_test <- as.numeric(test_ts)
+
+
+# A. FORECAST COMPARISON PLOT
+
+
+plot_data <- data.frame(
+  Year = rep(test_years_vec, 4),
+  Value = c(
+    actual_test,
+    arima_pred_test,
+    catboost_pred_test,
+    hybrid_pred_test
+  ),
+  Model = factor(
+    rep(c("Actual", "ARIMA", "CatBoost", "Hybrid"), each = length(test_ts)),
+    levels = c("Actual", "ARIMA", "CatBoost", "Hybrid")
+  )
+)
+
+
+plot1 <- ggplot(plot_data, aes(x = Year, y = Value, color = Model, linetype = Model)) +
+  geom_line(aes(size = Model)) +
+  geom_point(aes(size = Model)) +
+  scale_color_manual(values = c(
+    "Actual" = "black",
+    "ARIMA" = "#1f77b4",
+    "CatBoost" = "#2ca02c",
+    "Hybrid" = "#d62728"
+  )) +
+  scale_linetype_manual(values = c(
+    "Actual" = "solid",
+    "ARIMA" = "dashed",
+    "CatBoost" = "longdash",
+    "Hybrid" = "solid"
+  )) +
+  scale_size_manual(values = c(
+    "Actual" = 1.2,
+    "ARIMA" = 1.1,
+    "CatBoost" = 1.6,
+    "Hybrid" = 1.3
+  )) +
+  guides(size = "none") +
+  labs(
+    title = "Test Set Forecast Comparison",
+    subtitle = "ARIMA vs Standalone CatBoost vs Hybrid (Log-Transformed)",
+    x = "Year",
+    y = "log(1 + Total Affected)",
+    color = "Model",
+    linetype = "Model"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom"
+  )
+
+
+print(plot1)
+
+
+# B. RESIDUALS PLOT
+
+
+residuals_df <- data.frame(
+  Year = rep(test_years_vec, 3),
+  Residual = c(
+    actual_test - arima_pred_test,
+    actual_test - catboost_pred_test,
+    actual_test - hybrid_pred_test
+  ),
+  Model = factor(
+    rep(c("ARIMA", "CatBoost", "Hybrid"), each = length(test_ts)),
+    levels = c("ARIMA", "CatBoost", "Hybrid")
+  )
+)
+
+
+plot2 <- ggplot(residuals_df, aes(x = Year, y = Residual, color = Model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_line(size = 1.2) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = c(
+    "ARIMA" = "#1f77b4",
+    "CatBoost" = "#2ca02c",
+    "Hybrid" = "#d62728"
+  )) +
+  labs(
+    title = "Residuals Comparison (Test Set)",
+    subtitle = "Closer to zero indicates better predictive performance",
+    x = "Year",
+    y = "Residual"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom"
+  )
+
+
+print(plot2)
+
+
+# ============================================================
+# 18. 5-YEAR FUTURE FORECASTS (2025-2029)
+# ============================================================
+# 18.1 Refit ARIMA and Generate Baseline Forecast 
+final_arima <- Arima(ts_affected, order = c(5, 1, 1), include.mean = TRUE, method = "ML")
+arima_future_5yr <- forecast(final_arima, h = 5)
+arima_future_pred <- as.numeric(arima_future_5yr$mean)
+
+
+# 18.2 Generate Hybrid Correction (CatBoost)
+final_residuals <- as.numeric(ts_affected - fitted(final_arima))
+recent_residuals_future <- tail(final_residuals, 5) 
+
+
+hybrid_future_pred <- numeric(5)
+DAMPING_FACTOR <- 0.3 
+
+
+for (i in 1:5) {
+  year_idx <- length(ts_affected) + i
+  
+  future_features <- matrix(c(
+    year_idx, 
+    recent_residuals_future[5],    # lag1
+    recent_residuals_future[4],    # lag2
+    recent_residuals_future[3],    # lag3
+    recent_residuals_future[2],    # lag4
+    recent_residuals_future[1],    # lag5
+    mean(recent_residuals_future), # rolling_mean
+    sd(recent_residuals_future)    # rolling_std
+  ), nrow = 1)
+  
+  colnames(future_features) <- c("year_idx", "lag1", "lag2", "lag3", "lag4", "lag5", "rolling_mean", "rolling_std")
+  
+  future_pool <- catboost.load_pool(data = future_features)
+  catboost_residual <- catboost.predict(catboost_resid_model, future_pool)
+
+
+  hybrid_future_pred[i] <- arima_future_pred[i] + (catboost_residual * DAMPING_FACTOR)
+  
+  # Recursive update for next year
+  recent_residuals_future <- c(recent_residuals_future[-1], catboost_residual)
+}
+
+
+# VISUALIZATION
+
+
+future_years <- 2025:2029
+historical_years <- as.numeric(time(ts_affected))
+last_hist_year  <- tail(historical_years, 1)
+last_hist_value <- tail(as.numeric(ts_affected), 1)
+
+
+hist_df <- data.frame(Year = historical_years, Value = as.numeric(ts_affected), Type = "Historical")
+
+
+arima_df <- data.frame(
+  Year = c(last_hist_year, future_years),
+  Value = c(last_hist_value, arima_future_pred),
+  Type = "ARIMA Forecast"
+)
+
+
+hybrid_df <- data.frame(
+  Year = c(last_hist_year, future_years),
+  Value = c(last_hist_value, hybrid_future_pred),
+  Type = "Hybrid Forecast"
+)
+
+
+plot_data_combined <- rbind(hist_df, arima_df, hybrid_df)
+plot_data_combined$Type <- factor(plot_data_combined$Type, levels = c("Historical", "ARIMA Forecast", "Hybrid Forecast"))
+
+
+# A. PLOT OF 5-Year Forecast: Total Affected (Log-Transformed)
+
+
+future_plot_log <- ggplot(plot_data_combined, aes(x = Year, y = Value, color = Type, linetype = Type)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(data = subset(plot_data_combined, Year >= 2024), size = 2) +
+  geom_vline(xintercept = 2024.5, linetype = "dotted", color = "gray50") +
+  scale_color_manual(values = c("Historical" = "black", "ARIMA Forecast" = "blue", "Hybrid Forecast" = "red")) +
+  scale_linetype_manual(values = c("Historical" = "solid", "ARIMA Forecast" = "dashed", "Hybrid Forecast" = "solid")) +
+  labs(title = "5-Year Forecast: Total Affected (Log-Transformed)",
+       subtitle = "ARIMA vs Hybrid Model (2025-2029)",
+       y = "log(1 + Total Affected)") +
+  theme_minimal() + theme(legend.position = "bottom")
+
+
+print(future_plot_log)
+
+
+# B. PLOT OF ORIGINAL SCALE
+
+
+plot_data_orig <- plot_data_combined
+plot_data_orig$Value <- expm1(plot_data_orig$Value)
+
+
+future_plot_orig <- ggplot(plot_data_orig, aes(x = Year, y = Value, color = Type, linetype = Type)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(data = subset(plot_data_orig, Year >= 2024), size = 2) +
+  geom_vline(xintercept = 2024.5, linetype = "dotted", color = "gray50") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_color_manual(values = c("Historical" = "black", "ARIMA Forecast" = "blue", "Hybrid Forecast" = "red")) +
+  scale_linetype_manual(values = c("Historical" = "solid", "ARIMA Forecast" = "dashed", "Hybrid Forecast" = "solid")) +
+  labs(title = "5-Year Forecast: Total Affected (Original Scale)",
+       subtitle = "ARIMA vs Hybrid Model (Actual Counts)",
+       y = "Number of People Affected") +
+  theme_minimal() + theme(legend.position = "bottom")
+
+
+print(future_plot_orig)
+
+
+# FINAL FORECASTS RESULTS (2025-2029)
+future_results <- data.frame(
+  Year = future_years,
+  ARIMA_Affected = format(round(expm1(arima_future_pred), 0), big.mark = ","),
+  Hybrid_Affected = format(round(expm1(hybrid_future_pred), 0), big.mark = ",")
+)
+print(future_results, row.names = FALSE)
+
+
+# ============================================================
+# 19. ERROR METRICS
+# ============================================================
+
+
+calculate_metrics <- function(actual, predicted, model_name, naive = NULL) {
+  
+  mae <- mean(abs(actual - predicted))
+  rmse <- sqrt(mean((actual - predicted)^2))
+  mape <- mean(abs((actual - predicted) / actual)) * 100
+  smape <- mean(2 * abs(actual - predicted) /
+                  (abs(actual) + abs(predicted))) * 100
+  
+  ss_res <- sum((actual - predicted)^2)
+  ss_tot <- sum((actual - mean(actual))^2)
+  r2 <- 1 - ss_res / ss_tot
+  
+  if (!is.null(naive)) {
+    theil_u <- sqrt(mean((actual - predicted)^2)) /
+      sqrt(mean((actual - naive)^2))
+  } else {
+    theil_u <- NA
+  }
+  
+  data.frame(
+    Model = model_name,
+    MAE = round(mae, 6),
+    RMSE = round(rmse, 6),
+    MAPE = round(mape, 4),
+    SMAPE = round(smape, 4),
+    R2 = round(r2, 6),
+    Theil_U = round(theil_u, 6)
+  )
+}
+
+
+# Naive benchmark (random walk)
+naive_forecast <- c(train_ts[length(train_ts)], actual_test[-length(actual_test)])
+
+
+metrics_arima <- calculate_metrics(actual_test, arima_pred_test, "ARIMA", naive_forecast)
+metrics_catboost <- calculate_metrics(actual_test, catboost_pred_test, "CatBoost", naive_forecast)
+metrics_hybrid <- calculate_metrics(actual_test, hybrid_pred_test, "Hybrid", naive_forecast)
+
+
+all_metrics <- rbind(metrics_arima, metrics_catboost, metrics_hybrid)
+print(all_metrics, row.names = FALSE)
+
+
+# PERFORMANCE SUMMARY
+best_model <- all_metrics[which.min(all_metrics$RMSE), ]
+
+
+cat("\nBest Model by RMSE:\n")
+cat("  Model:", best_model$Model, "\n")
+cat("  RMSE :", best_model$RMSE, "\n")
+cat("  R²   :", best_model$R2, "\n")
+cat("  Theil's U:", best_model$Theil_U, "\n")
+
+
+
+
+# ============================================================
+# END OF SCRIPT
+# ============================================================
