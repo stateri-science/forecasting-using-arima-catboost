@@ -381,21 +381,8 @@ All analysis was done in **R**.
 | `ggplot2` | Visualization |
 | `seastests` | Optional seasonality checks |
 
----
-
-## Repository Structure
-
 ```
-.
-├── README.md
-├── images/                    # Figures used in this README
-│   ├── fig01.png ... fig11.png
-├── data/
-│   └── TSA ARIMA Catboost Data.csv   # EM-DAT export (add your file here)
-├── scripts/
-│   └── hybrid_arima_catboost.R       # Main analysis script (add your file here)
-└── docs/
-    └── TSA_Seatworks.pdf             # Full paper (optional)
+
 ```
 
 ---
